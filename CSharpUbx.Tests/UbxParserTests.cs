@@ -45,24 +45,24 @@ public class UbxParserTests
         Assert.True(message.IsRxmMeas50());
     }
 
-    private static byte[] BuildFrame(byte messageClass, byte messageId, byte[] payload)
+    [Fact]
+    public void BuildFrame_ShouldProduceValidChecksummedFrame()
     {
-        var length = (ushort)payload.Length;
-        var classIdLenPayload = new byte[4 + payload.Length];
-        classIdLenPayload[0] = messageClass;
-        classIdLenPayload[1] = messageId;
-        classIdLenPayload[2] = (byte)(length & 0xFF);
-        classIdLenPayload[3] = (byte)(length >> 8);
-        Array.Copy(payload, 0, classIdLenPayload, 4, payload.Length);
+        var payload = new byte[] { 0x01, 0x02, 0x03 };
+        var frame = UbxClient.BuildFrame((byte)UbxClass.Cfg, (byte)CfgMessageId.Valset, payload);
 
-        var checksum = UbxChecksum.Compute(classIdLenPayload);
+        Assert.Equal(UbxMessage.SyncChar1, frame[0]);
+        Assert.Equal(UbxMessage.SyncChar2, frame[1]);
+        Assert.Equal((byte)UbxClass.Cfg, frame[2]);
+        Assert.Equal((byte)CfgMessageId.Valset, frame[3]);
+        Assert.Equal(3, frame[4] | (frame[5] << 8));
 
-        var frame = new byte[8 + payload.Length];
-        frame[0] = UbxMessage.SyncChar1;
-        frame[1] = UbxMessage.SyncChar2;
-        Array.Copy(classIdLenPayload, 0, frame, 2, classIdLenPayload.Length);
-        frame[^2] = checksum.CkA;
-        frame[^1] = checksum.CkB;
-        return frame;
+        var messages = new UbxParser().Feed(frame);
+        var parsed = Assert.Single(messages);
+        Assert.Equal(payload, parsed.Payload.ToArray());
     }
+
+    private static byte[] BuildFrame(byte messageClass, byte messageId, byte[] payload) =>
+        UbxClient.BuildFrame(messageClass, messageId, payload);
 }
+
