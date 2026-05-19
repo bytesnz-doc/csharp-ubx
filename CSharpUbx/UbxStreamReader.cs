@@ -24,7 +24,7 @@ public sealed class UbxStreamReader
         while (true)
         {
             var bytesRead = await _stream.ReadAsync(readBuffer.AsMemory(0, bufferSize), cancellationToken);
-            if (bytesRead <= 0)
+            if (bytesRead == 0)
             {
                 yield break;
             }

@@ -24,7 +24,7 @@ public sealed class RxmMeas50Message
 
         result = new RxmMeas50Message
         {
-            Payload = message.Payload
+            Payload = message.Payload.ToArray()
         };
 
         return true;

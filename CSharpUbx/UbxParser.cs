@@ -23,7 +23,7 @@ public sealed class UbxParser
             }
 
             var payloadLength = (ushort)(_buffer[cursor + 4] | (_buffer[cursor + 5] << 8));
-            var frameLength = 8 + payloadLength;
+            var frameLength = checked(8 + payloadLength);
 
             if (cursor + frameLength > _buffer.Count)
             {
