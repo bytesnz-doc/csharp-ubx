@@ -19,18 +19,148 @@ namespace CSharpUbx
         Sec = 0x27,
     }
 
-    /// <summary>Message IDs within the ACK class.</summary>
+    /// <summary>Message IDs within the NAV class (0x01).</summary>
+    public enum NavMessageId : byte
+    {
+        /// <summary>Position solution in ECEF.</summary>
+        PosEcef   = 0x01,
+        /// <summary>Geodetic position solution.</summary>
+        PosLlh    = 0x02,
+        /// <summary>Receiver navigation status.</summary>
+        Status    = 0x03,
+        /// <summary>Dilution of precision.</summary>
+        Dop       = 0x04,
+        /// <summary>Navigation position velocity time solution.</summary>
+        Pvt       = 0x07,
+        /// <summary>Odometer solution.</summary>
+        Odo       = 0x09,
+        /// <summary>Velocity solution in ECEF.</summary>
+        VelEcef   = 0x11,
+        /// <summary>Velocity solution in NED.</summary>
+        VelNed    = 0x12,
+        /// <summary>GPS time solution.</summary>
+        TimeGps   = 0x20,
+        /// <summary>UTC time solution.</summary>
+        TimeUtc   = 0x21,
+        /// <summary>Clock solution.</summary>
+        Clock     = 0x22,
+        /// <summary>GLONASS time solution.</summary>
+        TimeGlo   = 0x23,
+        /// <summary>BeiDou time solution.</summary>
+        TimeBds   = 0x24,
+        /// <summary>Galileo time solution.</summary>
+        TimeGal   = 0x25,
+        /// <summary>Leap second event information.</summary>
+        TimeLs    = 0x26,
+        /// <summary>GNSS orbit database info.</summary>
+        Orb       = 0x34,
+        /// <summary>Satellite information.</summary>
+        Sat       = 0x35,
+        /// <summary>Covariance matrices.</summary>
+        Cov       = 0x36,
+        /// <summary>Signal information.</summary>
+        Sig       = 0x43,
+        /// <summary>End of epoch.</summary>
+        Eoe       = 0x61,
+    }
+
+    /// <summary>Message IDs within the RXM class (0x02).</summary>
+    public enum RxmMessageId : byte
+    {
+        /// <summary>Broadcast navigation data subframe.</summary>
+        Sfrbx  = 0x13,
+        /// <summary>Galileo E1B/E5b 50 bps navigation data.</summary>
+        Meas50 = 0x14,
+        /// <summary>Multi-GNSS raw measurement data.</summary>
+        Rawx   = 0x15,
+        /// <summary>PMP (PointPerfect Message Protocol) data.</summary>
+        Pmp    = 0x72,
+    }
+
+    /// <summary>Message IDs within the INF class (0x04).</summary>
+    public enum InfMessageId : byte
+    {
+        /// <summary>ASCII output with error contents.</summary>
+        Error   = 0x00,
+        /// <summary>ASCII output with warning contents.</summary>
+        Warning = 0x01,
+        /// <summary>ASCII output with informational contents.</summary>
+        Notice  = 0x02,
+        /// <summary>ASCII output with test contents.</summary>
+        Test    = 0x03,
+        /// <summary>ASCII output with debug contents.</summary>
+        Debug   = 0x04,
+    }
+
+    /// <summary>Message IDs within the ACK class (0x05).</summary>
     public enum AckMessageId : byte
     {
+        /// <summary>Not-acknowledge.</summary>
         Nak = 0x00,
+        /// <summary>Acknowledge.</summary>
         Ack = 0x01,
     }
 
-    /// <summary>Message IDs within the CFG class.</summary>
+    /// <summary>Message IDs within the CFG class (0x06).</summary>
     public enum CfgMessageId : byte
     {
-        Rst = 0x04,
+        /// <summary>Set message output rate.</summary>
+        Msg    = 0x01,
+        /// <summary>Reset receiver.</summary>
+        Rst    = 0x04,
+        /// <summary>Navigation/measurement rate settings.</summary>
+        Rate   = 0x08,
+        /// <summary>GNSS system configuration.</summary>
+        Gnss   = 0x3E,
+        /// <summary>Set configuration item values.</summary>
         Valset = 0x8A,
+        /// <summary>Get configuration item values.</summary>
+        Valget = 0x8B,
+        /// <summary>Delete configuration item values.</summary>
+        Valdel = 0x8C,
+    }
+
+    /// <summary>Message IDs within the MON class (0x0A).</summary>
+    public enum MonMessageId : byte
+    {
+        /// <summary>I/O subsystem status.</summary>
+        Io    = 0x02,
+        /// <summary>Receiver/software/ROM version.</summary>
+        Ver   = 0x04,
+        /// <summary>Receiver buffer status.</summary>
+        RxBuf = 0x07,
+        /// <summary>Transmit buffer status.</summary>
+        TxBuf = 0x08,
+        /// <summary>Hardware status.</summary>
+        Hw    = 0x09,
+        /// <summary>Extended hardware status.</summary>
+        Hw2   = 0x0B,
+        /// <summary>Information on GNSS selection.</summary>
+        Gnss  = 0x28,
+        /// <summary>Spectrum analysis.</summary>
+        Span  = 0x31,
+        /// <summary>RF information.</summary>
+        Rf    = 0x38,
+    }
+
+    /// <summary>Message IDs within the TIM class (0x0D).</summary>
+    public enum TimMessageId : byte
+    {
+        /// <summary>Time pulse time data.</summary>
+        Tp   = 0x01,
+        /// <summary>Sourced time verification.</summary>
+        Vrfy = 0x06,
+        /// <summary>Time-of-survey data.</summary>
+        Tos  = 0x12,
+    }
+
+    /// <summary>Message IDs within the SEC class (0x27).</summary>
+    public enum SecMessageId : byte
+    {
+        /// <summary>Signature of a previous message.</summary>
+        Sign   = 0x01,
+        /// <summary>Unique chip ID.</summary>
+        UniqId = 0x03,
     }
 
     /// <summary>A parsed, checksum-verified UBX message.</summary>
