@@ -41,7 +41,6 @@ public class UbxParserTests
         var parsed = RxmMeas50Message.TryParse(message, out var meas50);
 
         Assert.True(parsed);
-        Assert.NotNull(meas50);
         Assert.Equal(payload, meas50.Payload);
         Assert.True(message.IsRxmMeas50());
     }

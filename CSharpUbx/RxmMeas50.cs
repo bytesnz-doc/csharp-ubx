@@ -8,9 +8,9 @@ public sealed class RxmMeas50Message
 
     public required byte[] Payload { get; init; }
 
-    public static bool TryParse(UbxMessage message, out RxmMeas50Message? result)
+    public static bool TryParse(UbxMessage message, out RxmMeas50Message result)
     {
-        result = null;
+        result = null!;
 
         if (message.MessageClass != ClassId || message.MessageId != MessageId)
         {
