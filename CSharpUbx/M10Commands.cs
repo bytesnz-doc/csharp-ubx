@@ -1,17 +1,37 @@
 namespace CSharpUbx;
 
+public readonly record struct UbxCommand(UbxClass Class, byte MessageId, byte[] Payload);
+
 public static class M10Commands
 {
-    public static readonly byte[] GpsEnable = FromHex("b562068a0900000100001f00311001fb80");
-    public static readonly byte[] GalileoDisable = FromHex("b562068a0900000100002100311000fc89");
-    public static readonly byte[] BdsDisable = FromHex("b562068a0900000100002200311000fd8e");
-    public static readonly byte[] GlonassDisable = FromHex("b562068a0900000100002500311000009d");
-    public static readonly byte[] RxmMeas50Enable = FromHex("b562068a09000001000049069120019baa");
-    public static readonly byte[] RxmMeas20Enable = FromHex("b562068a09000001000044069120019691");
-    public static readonly byte[] CfgRstColdStart = FromHex("b56206040400ffff01000d5f");
+    // CFG-VALSET: enable GPS constellation
+    public static readonly UbxCommand GpsEnable =
+        new(UbxClass.Cfg, (byte)CfgMessageId.Valset, FromHex("000100001f00311001"));
 
-    private static byte[] FromHex(string hex)
-    {
-        return Convert.FromHexString(hex);
-    }
+    // CFG-VALSET: disable Galileo constellation
+    public static readonly UbxCommand GalileoDisable =
+        new(UbxClass.Cfg, (byte)CfgMessageId.Valset, FromHex("000100002100311000"));
+
+    // CFG-VALSET: disable BDS constellation
+    public static readonly UbxCommand BdsDisable =
+        new(UbxClass.Cfg, (byte)CfgMessageId.Valset, FromHex("000100002200311000"));
+
+    // CFG-VALSET: disable GLONASS constellation
+    public static readonly UbxCommand GlonassDisable =
+        new(UbxClass.Cfg, (byte)CfgMessageId.Valset, FromHex("000100002500311000"));
+
+    // CFG-VALSET: enable RXM-MEAS50 output
+    public static readonly UbxCommand RxmMeas50Enable =
+        new(UbxClass.Cfg, (byte)CfgMessageId.Valset, FromHex("00010000490691200 1"));
+
+    // CFG-VALSET: enable RXM-MEAS20 output
+    public static readonly UbxCommand RxmMeas20Enable =
+        new(UbxClass.Cfg, (byte)CfgMessageId.Valset, FromHex("000100004406912001"));
+
+    // CFG-RST: cold start
+    public static readonly UbxCommand CfgRstColdStart =
+        new(UbxClass.Cfg, (byte)CfgMessageId.Rst, FromHex("ffff0100"));
+
+    private static byte[] FromHex(string hex) =>
+        Convert.FromHexString(hex.Replace(" ", string.Empty));
 }
