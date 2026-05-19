@@ -3,27 +3,40 @@ namespace CSharpUbx.Tests;
 public class UbxParserTests
 {
     [Fact]
-    public void Feed_ShouldParseSplitRxmMeas50Frame()
+    public void Feed_ShouldParseCompleteFrame()
     {
-        var payload = Enumerable.Range(0, RxmMeas50Message.PayloadLength).Select(i => (byte)i).ToArray();
-        var frame = BuildFrame(RxmMeas50Message.ClassId, RxmMeas50Message.MessageId, payload);
+        var payload = new byte[] { 0x01, 0x02, 0x03, 0x04 };
+        var frame = UbxClient.BuildFrame((byte)UbxClass.Cfg, (byte)CfgMessageId.Valset, payload);
         var parser = new UbxParser();
 
-        var firstBatch = parser.Feed(frame.AsSpan(0, 20));
-        var secondBatch = parser.Feed(frame.AsSpan(20));
+        var messages = parser.Feed(frame);
 
-        Assert.Empty(firstBatch);
-        var message = Assert.Single(secondBatch);
-        Assert.Equal(RxmMeas50Message.ClassId, message.MessageClass);
-        Assert.Equal(RxmMeas50Message.MessageId, message.MessageId);
+        var message = Assert.Single(messages);
+        Assert.Equal((byte)UbxClass.Cfg, message.MessageClass);
+        Assert.Equal((byte)CfgMessageId.Valset, message.MessageId);
         Assert.Equal(payload, message.Payload.ToArray());
     }
 
     [Fact]
-    public void Feed_ShouldIgnoreBadChecksumFrame()
+    public void Feed_ShouldParseFrameArrivingInMultipleChunks()
     {
-        var payload = Enumerable.Repeat((byte)0x5A, RxmMeas50Message.PayloadLength).ToArray();
-        var frame = BuildFrame(RxmMeas50Message.ClassId, RxmMeas50Message.MessageId, payload);
+        var payload = Enumerable.Range(0, 20).Select(i => (byte)i).ToArray();
+        var frame = UbxClient.BuildFrame((byte)UbxClass.Cfg, (byte)CfgMessageId.Valset, payload);
+        var parser = new UbxParser();
+
+        var firstBatch = parser.Feed(frame.AsSpan(0, 15));
+        var secondBatch = parser.Feed(frame.AsSpan(15));
+
+        Assert.Empty(firstBatch);
+        var message = Assert.Single(secondBatch);
+        Assert.Equal(payload, message.Payload.ToArray());
+    }
+
+    [Fact]
+    public void Feed_ShouldDiscardFrameWithBadChecksum()
+    {
+        var payload = new byte[] { 0xAA, 0xBB, 0xCC };
+        var frame = UbxClient.BuildFrame((byte)UbxClass.Mon, 0x09, payload);
         frame[^1] ^= 0xFF;
         var parser = new UbxParser();
 
@@ -33,36 +46,47 @@ public class UbxParserTests
     }
 
     [Fact]
-    public void TryParse_ShouldAcceptRxmMeas50Payload()
+    public void Feed_ShouldParseMultipleBackToBackFrames()
     {
-        var payload = Enumerable.Range(0, RxmMeas50Message.PayloadLength).Select(i => (byte)(255 - i)).ToArray();
-        var message = new UbxMessage(RxmMeas50Message.ClassId, RxmMeas50Message.MessageId, payload);
+        var payloadA = new byte[] { 0x01 };
+        var payloadB = new byte[] { 0x02, 0x03 };
+        var frames = UbxClient.BuildFrame((byte)UbxClass.Ack, (byte)AckMessageId.Ack, payloadA)
+            .Concat(UbxClient.BuildFrame((byte)UbxClass.Ack, (byte)AckMessageId.Nak, payloadB))
+            .ToArray();
+        var parser = new UbxParser();
 
-        var parsed = RxmMeas50Message.TryParse(message, out var meas50);
+        var messages = parser.Feed(frames);
 
-        Assert.True(parsed);
-        Assert.Equal(payload, meas50.Payload);
-        Assert.True(message.IsRxmMeas50());
+        Assert.Equal(2, messages.Count);
+        Assert.Equal(payloadA, messages[0].Payload.ToArray());
+        Assert.Equal(payloadB, messages[1].Payload.ToArray());
     }
 
     [Fact]
     public void BuildFrame_ShouldProduceValidChecksummedFrame()
     {
-        var payload = new byte[] { 0x01, 0x02, 0x03 };
+        var payload = new byte[] { 0x10, 0x20, 0x30 };
         var frame = UbxClient.BuildFrame((byte)UbxClass.Cfg, (byte)CfgMessageId.Valset, payload);
 
         Assert.Equal(UbxMessage.SyncChar1, frame[0]);
         Assert.Equal(UbxMessage.SyncChar2, frame[1]);
         Assert.Equal((byte)UbxClass.Cfg, frame[2]);
         Assert.Equal((byte)CfgMessageId.Valset, frame[3]);
-        Assert.Equal(3, frame[4] | (frame[5] << 8));
+        Assert.Equal(payload.Length, frame[4] | (frame[5] << 8));
 
-        var messages = new UbxParser().Feed(frame);
-        var parsed = Assert.Single(messages);
+        var parsed = Assert.Single(new UbxParser().Feed(frame));
         Assert.Equal(payload, parsed.Payload.ToArray());
     }
 
-    private static byte[] BuildFrame(byte messageClass, byte messageId, byte[] payload) =>
-        UbxClient.BuildFrame(messageClass, messageId, payload);
+    [Fact]
+    public void BuildFrame_ShouldWorkWithEmptyPayload()
+    {
+        var frame = UbxClient.BuildFrame((byte)UbxClass.Ack, (byte)AckMessageId.Ack, []);
+        Assert.Equal(8, frame.Length);
+
+        var parsed = Assert.Single(new UbxParser().Feed(frame));
+        Assert.Empty(parsed.Payload.ToArray());
+    }
 }
+
 

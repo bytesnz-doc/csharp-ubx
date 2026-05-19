@@ -3,42 +3,91 @@ namespace CSharpUbx.Tests;
 public class M10ConfiguratorTests
 {
     [Fact]
-    public async Task ConfigureGpsOnlyAsync_ShouldSendExpectedSequenceWithMeas50()
+    public async Task ConfigureGpsOnlyAsync_ShouldSendFourConfigFramesAndReceiveAcks()
     {
-        await using var stream = new MemoryStream();
-
-        await M10Configurator.ConfigureGpsOnlyAsync(stream, useMeas50: true);
-
-        var expected = Concatenate(
+        var commands = new[]
+        {
             M10Commands.GpsEnable,
             M10Commands.GalileoDisable,
             M10Commands.BdsDisable,
             M10Commands.GlonassDisable,
-            M10Commands.RxmMeas50Enable);
+        };
 
-        Assert.Equal(expected, stream.ToArray());
+        // Pre-build the ACK responses the device would send back for each CFG-VALSET.
+        var ackData = commands
+            .SelectMany(cmd => UbxClient.BuildFrame(
+                (byte)UbxClass.Ack, (byte)AckMessageId.Ack,
+                [(byte)cmd.Class, cmd.MessageId]))
+            .ToArray();
+
+        using var stream = new DuplexMemoryStream(ackData);
+        var client = new UbxClient(stream);
+
+        await M10Configurator.ConfigureGpsOnlyAsync(client);
+
+        // Verify all four config frames were written in order.
+        var expectedWrites = commands
+            .SelectMany(cmd => UbxClient.BuildFrame((byte)cmd.Class, cmd.MessageId, cmd.Payload))
+            .ToArray();
+
+        Assert.Equal(expectedWrites, stream.Written);
     }
 
     [Fact]
-    public async Task TriggerColdStartResetAsync_ShouldSendCfgRst()
+    public async Task TriggerColdStartResetAsync_ShouldSendCfgRstFrame()
     {
-        await using var stream = new MemoryStream();
+        using var stream = new DuplexMemoryStream([]);
+        var client = new UbxClient(stream);
 
-        await M10Configurator.TriggerColdStartResetAsync(stream);
+        await M10Configurator.TriggerColdStartResetAsync(client);
 
-        Assert.Equal(M10Commands.CfgRstColdStart, stream.ToArray());
+        var cmd = M10Commands.CfgRstColdStart;
+        var expected = UbxClient.BuildFrame((byte)cmd.Class, cmd.MessageId, cmd.Payload);
+        Assert.Equal(expected, stream.Written);
     }
 
-    private static byte[] Concatenate(params byte[][] arrays)
+    /// <summary>
+    /// Minimal duplex stream for testing: pre-loaded read data, recorded writes.
+    /// </summary>
+    private sealed class DuplexMemoryStream(byte[] readData) : Stream
     {
-        var result = new byte[arrays.Sum(a => a.Length)];
-        var offset = 0;
-        foreach (var arr in arrays)
+        private readonly MemoryStream _reads = new(readData);
+        private readonly MemoryStream _writes = new();
+
+        public byte[] Written => _writes.ToArray();
+
+        public override bool CanRead  => true;
+        public override bool CanWrite => true;
+        public override bool CanSeek  => false;
+        public override long Length   => throw new NotSupportedException();
+        public override long Position
         {
-            Buffer.BlockCopy(arr, 0, result, offset, arr.Length);
-            offset += arr.Length;
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
         }
 
-        return result;
+        public override int Read(byte[] buffer, int offset, int count)         => _reads.Read(buffer, offset, count);
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+            => _reads.ReadAsync(buffer, offset, count, ct);
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+            => _reads.ReadAsync(buffer, ct);
+
+        public override void Write(byte[] buffer, int offset, int count)        => _writes.Write(buffer, offset, count);
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+        {
+            _writes.Write(buffer, offset, count);
+            return Task.CompletedTask;
+        }
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
+        {
+            _writes.Write(buffer.Span);
+            return ValueTask.CompletedTask;
+        }
+
+        public override void  Flush()                                           => _writes.Flush();
+        public override Task  FlushAsync(CancellationToken ct)                  => Task.CompletedTask;
+        public override long  Seek(long offset, SeekOrigin origin)              => throw new NotSupportedException();
+        public override void  SetLength(long value)                             => throw new NotSupportedException();
     }
 }
+

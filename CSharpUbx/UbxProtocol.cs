@@ -37,13 +37,6 @@ public enum CfgMessageId : byte
     Valset = 0x8A,
 }
 
-/// <summary>Message IDs within the RXM class.</summary>
-public enum RxmMessageId : byte
-{
-    Meas20 = 0x84,
-    Meas50 = 0x86,
-}
-
 // ─────────────────────────────────────────────────────────────
 // Core message type
 // ─────────────────────────────────────────────────────────────
@@ -158,6 +151,7 @@ public sealed class UbxClient
 {
     private readonly Stream _stream;
     private readonly UbxParser _parser = new();
+    private readonly Queue<UbxMessage> _pendingMessages = new();
 
     public UbxClient(Stream stream)
     {
@@ -212,19 +206,26 @@ public sealed class UbxClient
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var bytesRead = await _stream.ReadAsync(readBuffer, cancellationToken);
-            if (bytesRead == 0)
+            // Always enqueue a fresh batch before draining, so we never lose
+            // messages that arrive alongside our ACK/NAK in the same read.
+            if (_pendingMessages.Count == 0)
             {
-                throw new EndOfStreamException("Stream ended while waiting for ACK/NAK.");
+                var bytesRead = await _stream.ReadAsync(readBuffer, cancellationToken);
+                if (bytesRead == 0)
+                {
+                    throw new EndOfStreamException("Stream ended while waiting for ACK/NAK.");
+                }
+
+                foreach (var msg in _parser.Feed(readBuffer.AsSpan(0, bytesRead)))
+                {
+                    _pendingMessages.Enqueue(msg);
+                }
             }
 
-            var messages = _parser.Feed(readBuffer.AsSpan(0, bytesRead));
-            foreach (var msg in messages)
+            while (_pendingMessages.Count > 0)
             {
-                if (msg.MessageClass == (byte)UbxClass.Ack &&
-                    msg.Payload.Length == 2 &&
-                    msg.Payload.Span[0] == (byte)msgClass &&
-                    msg.Payload.Span[1] == msgId)
+                var msg = _pendingMessages.Dequeue();
+                if (IsAckNakFor(msg, msgClass, msgId))
                 {
                     return msg.MessageId == (byte)AckMessageId.Ack;
                 }
@@ -253,14 +254,19 @@ public sealed class UbxClient
         var readBuffer = new byte[bufferSize];
         while (true)
         {
+            // Yield any messages buffered from a prior SendConfigAsync call.
+            while (_pendingMessages.Count > 0)
+            {
+                yield return _pendingMessages.Dequeue();
+            }
+
             var bytesRead = await _stream.ReadAsync(readBuffer.AsMemory(0, bufferSize), cancellationToken);
             if (bytesRead == 0)
             {
                 yield break;
             }
 
-            var messages = _parser.Feed(readBuffer.AsSpan(0, bytesRead));
-            foreach (var message in messages)
+            foreach (var message in _parser.Feed(readBuffer.AsSpan(0, bytesRead)))
             {
                 yield return message;
             }
@@ -287,6 +293,12 @@ public sealed class UbxClient
         frame[7 + payload.Length] = ck.CkB;
         return frame;
     }
+
+    private static bool IsAckNakFor(UbxMessage msg, UbxClass msgClass, byte msgId) =>
+        msg.MessageClass == (byte)UbxClass.Ack &&
+        msg.Payload.Length == 2 &&
+        msg.Payload.Span[0] == (byte)msgClass &&
+        msg.Payload.Span[1] == msgId;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -321,14 +333,6 @@ public static class M10Commands
     public static readonly UbxCommand GlonassDisable =
         Valset("000100002500311000");
 
-    /// <summary>CFG-VALSET: enable UBX-RXM-MEAS50 output (50-byte, 2 Hz).</summary>
-    public static readonly UbxCommand RxmMeas50Enable =
-        Valset("000100004906912001");
-
-    /// <summary>CFG-VALSET: enable UBX-RXM-MEAS20 output (20-byte, 2 Hz).</summary>
-    public static readonly UbxCommand RxmMeas20Enable =
-        Valset("000100004406912001");
-
     /// <summary>CFG-RST: simulate GNSS cold start.</summary>
     public static readonly UbxCommand CfgRstColdStart =
         new(UbxClass.Cfg, (byte)CfgMessageId.Rst, Convert.FromHexString("ffff0100"));
@@ -353,17 +357,12 @@ public static class M10Configurator
     /// </summary>
     public static async Task ConfigureGpsOnlyAsync(
         UbxClient client,
-        bool useMeas50 = true,
         CancellationToken cancellationToken = default)
     {
         await SendAndVerifyAsync(client, M10Commands.GpsEnable, cancellationToken);
         await SendAndVerifyAsync(client, M10Commands.GalileoDisable, cancellationToken);
         await SendAndVerifyAsync(client, M10Commands.BdsDisable, cancellationToken);
         await SendAndVerifyAsync(client, M10Commands.GlonassDisable, cancellationToken);
-        await SendAndVerifyAsync(
-            client,
-            useMeas50 ? M10Commands.RxmMeas50Enable : M10Commands.RxmMeas20Enable,
-            cancellationToken);
     }
 
     /// <summary>
@@ -389,51 +388,3 @@ public static class M10Configurator
     }
 }
 
-// ─────────────────────────────────────────────────────────────
-// RXM-MEAS50 message helpers
-// ─────────────────────────────────────────────────────────────
-
-/// <summary>
-/// Parsed UBX-RXM-MEAS50 message (class 0x02, id 0x86, fixed 50-byte payload).
-/// The payload is opaque and intended to be forwarded to a u-blox cloud service.
-/// </summary>
-public sealed class RxmMeas50Message
-{
-    public const byte ClassId      = (byte)UbxClass.Rxm;
-    public const byte MessageId    = (byte)RxmMessageId.Meas50;
-    public const int  PayloadLength = 50;
-
-    public required byte[] Payload { get; init; }
-
-    /// <summary>
-    /// Attempts to parse a <see cref="UbxMessage"/> as an RXM-MEAS50 message.
-    /// Returns <see langword="true"/> and sets <paramref name="result"/> on success.
-    /// </summary>
-    public static bool TryParse(UbxMessage message, out RxmMeas50Message result)
-    {
-        result = null!;
-
-        if (message.MessageClass != ClassId || message.MessageId != MessageId)
-        {
-            return false;
-        }
-
-        if (message.Payload.Length != PayloadLength)
-        {
-            return false;
-        }
-
-        result = new RxmMeas50Message { Payload = message.Payload.ToArray() };
-        return true;
-    }
-}
-
-/// <summary>Extension helpers for <see cref="UbxMessage"/>.</summary>
-public static class UbxMessageExtensions
-{
-    /// <summary>Returns <see langword="true"/> if the message is a valid RXM-MEAS50 frame.</summary>
-    public static bool IsRxmMeas50(this UbxMessage message) =>
-        message.MessageClass  == RxmMeas50Message.ClassId &&
-        message.MessageId     == RxmMeas50Message.MessageId &&
-        message.Payload.Length == RxmMeas50Message.PayloadLength;
-}
