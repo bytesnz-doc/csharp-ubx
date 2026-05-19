@@ -13,6 +13,12 @@ using System.IO.Ports;
 using var serialPort = new SerialPort("/dev/ttyUSB0", 38400);
 serialPort.Open();
 
+// Apply GPS-only config and enable RXM-MEAS50 output (2Hz in provided config):
+await M10Configurator.ConfigureGpsOnlyAsync(serialPort.BaseStream, useMeas50: true);
+
+// Trigger cold-start reset when needed:
+await M10Configurator.TriggerColdStartResetAsync(serialPort.BaseStream);
+
 var reader = new UbxStreamReader(serialPort.BaseStream);
 await foreach (var message in reader.ReadMessagesAsync())
 {
@@ -23,3 +29,9 @@ await foreach (var message in reader.ReadMessagesAsync())
     }
 }
 ```
+
+Included configuration commands match the exact UBX frames provided for:
+- GPS enable
+- Galileo/BDS/GLONASS disable
+- RXM-MEAS50 or RXM-MEAS20 enable
+- UBX-CFG-RST cold start

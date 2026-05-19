@@ -16,7 +16,7 @@ public class UbxParserTests
         var message = Assert.Single(secondBatch);
         Assert.Equal(RxmMeas50Message.ClassId, message.MessageClass);
         Assert.Equal(RxmMeas50Message.MessageId, message.MessageId);
-        Assert.Equal(payload, message.Payload);
+        Assert.Equal(payload, message.Payload.ToArray());
     }
 
     [Fact]
