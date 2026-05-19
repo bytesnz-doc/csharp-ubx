@@ -1,6 +1,7 @@
 # csharp-ubx
 
-Minimal C# library for reading u-blox UBX frames over UART streams, with RXM-MEAS50 support for M10 modules.
+Single-file C# library for sending and receiving UBX protocol frames over any UART stream.  
+Drop `CSharpUbx/UbxProtocol.cs` into your project — no other files needed.
 
 Protocol reference: https://content.u-blox.com/sites/default/files/documents/u-blox-M10-SPG-5.30_InterfaceDescription_UBXDOC-304424225-20395.pdf
 
@@ -13,25 +14,35 @@ using System.IO.Ports;
 using var serialPort = new SerialPort("/dev/ttyUSB0", 38400);
 serialPort.Open();
 
-// Apply GPS-only config and enable RXM-MEAS50 output (2Hz in provided config):
-await M10Configurator.ConfigureGpsOnlyAsync(serialPort.BaseStream, useMeas50: true);
+var client = new UbxClient(serialPort.BaseStream);
 
-// Trigger cold-start reset when needed:
-await M10Configurator.TriggerColdStartResetAsync(serialPort.BaseStream);
+// Configure GPS-only constellation (waits for ACK after each command):
+await M10Configurator.ConfigureGpsOnlyAsync(client);
 
-var reader = new UbxStreamReader(serialPort.BaseStream);
-await foreach (var message in reader.ReadMessagesAsync())
+// Trigger cold-start reset when needed (no ACK — device resets immediately):
+await M10Configurator.TriggerColdStartResetAsync(client);
+
+// Stream all incoming UBX messages (checksum verified, payload extracted):
+await foreach (var message in client.ReadMessagesAsync())
 {
-    if (RxmMeas50Message.TryParse(message, out var meas50))
-    {
-        // Forward meas50.Payload (50 bytes) to your application / cloud pipeline.
-        Console.WriteLine($"RXM-MEAS50 payload length: {meas50.Payload.Length}");
-    }
+    Console.WriteLine($"Class=0x{message.MessageClass:X2} Id=0x{message.MessageId:X2} " +
+                      $"Payload={message.Payload.Length} bytes");
 }
 ```
 
-Included configuration commands match the exact UBX frames provided for:
-- GPS enable
-- Galileo/BDS/GLONASS disable
-- RXM-MEAS50 or RXM-MEAS20 enable
-- UBX-CFG-RST cold start
+## Sending arbitrary messages
+
+```csharp
+// Send any UBX message and wait for ACK/NAK (use a CancellationToken for timeout):
+using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+bool acked = await client.SendConfigAsync(UbxClass.Cfg, (byte)CfgMessageId.Valset,
+                                          payload, cts.Token);
+
+// Or fire-and-forget (no ACK wait):
+await client.SendAsync(UbxClass.Cfg, (byte)CfgMessageId.Rst, payload);
+```
+
+## Included M10 configuration commands
+
+- GPS enable / Galileo, BDS, GLONASS disable (`M10Commands.*`)
+- UBX-CFG-RST cold start (`M10Commands.CfgRstColdStart`)
