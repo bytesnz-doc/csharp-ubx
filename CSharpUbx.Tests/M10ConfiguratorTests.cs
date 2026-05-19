@@ -104,8 +104,7 @@ namespace CSharpUbx.Tests
 
             public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
             {
-                _writes.Write(buffer, offset, count);
-                return Task.CompletedTask;
+                return _writes.WriteAsync(buffer, offset, count, cancellationToken);
             }
 
             public override void Flush()

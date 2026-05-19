@@ -394,10 +394,32 @@ namespace CSharpUbx
             var bytes = new byte[hex.Length / 2];
             for (var i = 0; i < bytes.Length; i++)
             {
-                bytes[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+                var high = ParseHexNibble(hex[i * 2]);
+                var low = ParseHexNibble(hex[(i * 2) + 1]);
+                bytes[i] = (byte)((high << 4) | low);
             }
 
             return bytes;
+        }
+
+        private static int ParseHexNibble(char c)
+        {
+            if (c >= '0' && c <= '9')
+            {
+                return c - '0';
+            }
+
+            if (c >= 'a' && c <= 'f')
+            {
+                return c - 'a' + 10;
+            }
+
+            if (c >= 'A' && c <= 'F')
+            {
+                return c - 'A' + 10;
+            }
+
+            throw new FormatException("Invalid hex character: " + c);
         }
     }
 
