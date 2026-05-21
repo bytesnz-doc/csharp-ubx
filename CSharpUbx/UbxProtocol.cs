@@ -1,9 +1,10 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.IO.Ports;
 using System.Threading;
 using System.Threading.Tasks;
+
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("CSharpUbx.Tests")]
 
 namespace CSharpUbx
 {
@@ -322,21 +323,25 @@ namespace CSharpUbx
 
     /// <summary>
     /// Main entry point for UBX communication over SerialPort.
+    /// All received bytes are processed through <see cref="SerialPort.DataReceived"/>.
+    /// Non-ACK/NAK messages are raised via <see cref="MessageReceived"/>.
+    /// ACK-5 and NAK-5 frames are consumed internally by <see cref="SendConfigAsync"/>.
     /// </summary>
     public sealed class UbxClient : IDisposable
     {
         private readonly object _sync = new object();
         private readonly SerialPort _serialPort;
-        private readonly Stream _stream;
+        private readonly Action<byte[], int, int> _writeBytes;
         private readonly UbxParser _parser = new UbxParser();
-        private readonly Queue<UbxMessage> _pendingMessages = new Queue<UbxMessage>();
-        private readonly SemaphoreSlim _pendingSignal = new SemaphoreSlim(0);
+        private readonly Queue<UbxMessage> _ackNakQueue = new Queue<UbxMessage>();
+        private readonly SemaphoreSlim _ackNakSignal = new SemaphoreSlim(0);
 
         /// <summary>
-        /// Raised for each checksum-verified UBX message received.
+        /// Raised for each non-ACK/NAK UBX message received from the device.
         /// </summary>
         public event EventHandler<UbxMessageReceivedEventArgs> MessageReceived;
 
+        /// <summary>Initialises a new client that communicates via <paramref name="serialPort"/>.</summary>
         public UbxClient(SerialPort serialPort)
         {
             if (serialPort == null)
@@ -345,46 +350,32 @@ namespace CSharpUbx
             }
 
             _serialPort = serialPort;
-            _stream = serialPort.BaseStream;
-            _serialPort.DataReceived += OnSerialPortDataReceived;
+            _writeBytes = _serialPort.Write;
+            _serialPort.DataReceived += OnDataReceived;
         }
 
-        /// <summary>
-        /// Backward-compatible stream constructor.
-        /// Prefer <see cref="UbxClient(SerialPort)"/> for event-driven serial reads.
-        /// </summary>
-        public UbxClient(Stream stream)
+        /// <summary>For unit testing only. Does not bind to a SerialPort.</summary>
+        internal UbxClient(Action<byte[], int, int> writeAction)
         {
-            if (stream == null)
-            {
-                throw new ArgumentNullException(nameof(stream));
-            }
-
-            _stream = stream;
+            _writeBytes = writeAction ?? throw new ArgumentNullException(nameof(writeAction));
         }
 
-        /// <summary>
-        /// Builds a complete UBX frame and writes it to the stream.
-        /// </summary>
-        public async Task SendAsync(
+        /// <summary>Builds a UBX frame and writes it to the serial port.</summary>
+        public Task SendAsync(
             UbxClass msgClass,
             byte msgId,
             byte[] payload = null,
             CancellationToken cancellationToken = default(CancellationToken))
         {
-            if (!_stream.CanWrite)
-            {
-                throw new InvalidOperationException("Stream must be writable.");
-            }
-
+            cancellationToken.ThrowIfCancellationRequested();
             payload = payload ?? new byte[0];
             var frame = BuildFrame((byte)msgClass, msgId, payload);
-            await _stream.WriteAsync(frame, 0, frame.Length, cancellationToken).ConfigureAwait(false);
-            await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            _writeBytes(frame, 0, frame.Length);
+            return Task.CompletedTask;
         }
 
         /// <summary>
-        /// Sends a configuration message and waits until matching ACK or NAK is received.
+        /// Sends a configuration message and waits for a matching ACK or NAK.
         /// Returns true for ACK, false for NAK.
         /// </summary>
         public async Task<bool> SendConfigAsync(
@@ -393,14 +384,8 @@ namespace CSharpUbx
             byte[] payload = null,
             CancellationToken cancellationToken = default(CancellationToken))
         {
-            if (_serialPort == null && !_stream.CanRead)
-            {
-                throw new InvalidOperationException("Stream must be readable to wait for ACK/NAK.");
-            }
-
             await SendAsync(msgClass, msgId, payload, cancellationToken).ConfigureAwait(false);
 
-            var readBuffer = new byte[256];
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -411,101 +396,26 @@ namespace CSharpUbx
                     return ack;
                 }
 
-                if (_serialPort != null)
-                {
-                    await _pendingSignal.WaitAsync(cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                var bytesRead = await _stream.ReadAsync(readBuffer, 0, readBuffer.Length, cancellationToken).ConfigureAwait(false);
-                if (bytesRead == 0)
-                {
-                    throw new EndOfStreamException("Stream ended while waiting for ACK/NAK.");
-                }
-
-                var parsed = _parser.Feed(readBuffer, 0, bytesRead);
-                EnqueueParsedMessages(parsed);
+                await _ackNakSignal.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
-        }
-
-        /// <summary>
-        /// Reads one chunk from the stream and returns all checksum-verified messages found.
-        /// In SerialPort mode this drains buffered parsed messages.
-        /// </summary>
-        public async Task<IReadOnlyList<UbxMessage>> ReceiveMessagesAsync(
-            int bufferSize,
-            CancellationToken cancellationToken = default(CancellationToken))
-        {
-            if (bufferSize <= 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(bufferSize));
-            }
-
-            if (_serialPort != null)
-            {
-                return DrainPendingMessages();
-            }
-
-            if (!_stream.CanRead)
-            {
-                throw new InvalidOperationException("Stream must be readable.");
-            }
-
-            var result = DrainPendingMessages();
-            var readBuffer = new byte[bufferSize];
-            var bytesRead = await _stream.ReadAsync(readBuffer, 0, readBuffer.Length, cancellationToken).ConfigureAwait(false);
-            if (bytesRead == 0)
-            {
-                return result;
-            }
-
-            var parsed = _parser.Feed(readBuffer, 0, bytesRead);
-            var newlyParsed = EnqueueParsedMessages(parsed);
-            var merged = new List<UbxMessage>(result.Count + newlyParsed.Count);
-            for (var i = 0; i < result.Count; i++)
-            {
-                merged.Add(result[i]);
-            }
-
-            for (var i = 0; i < newlyParsed.Count; i++)
-            {
-                merged.Add(newlyParsed[i]);
-            }
-
-            return merged;
         }
 
         public void Dispose()
         {
             if (_serialPort != null)
             {
-                _serialPort.DataReceived -= OnSerialPortDataReceived;
+                _serialPort.DataReceived -= OnDataReceived;
             }
 
-            _pendingSignal.Dispose();
+            _ackNakSignal.Dispose();
         }
 
-        private void OnSerialPortDataReceived(object sender, SerialDataReceivedEventArgs e)
+        /// <summary>
+        /// Feeds raw bytes into the parser and fires events. For unit testing only.
+        /// </summary>
+        internal void FeedBytes(byte[] data, int offset, int count)
         {
-            try
-            {
-                while (_serialPort.BytesToRead > 0)
-                {
-                    var readCount = _serialPort.BytesToRead;
-                    var buffer = new byte[readCount];
-                    var bytesRead = _serialPort.Read(buffer, 0, buffer.Length);
-                    if (bytesRead <= 0)
-                    {
-                        return;
-                    }
-                    var parsed = _parser.Feed(buffer, 0, bytesRead);
-                    EnqueueParsedMessages(parsed);
-                }
-            }
-            catch
-            {
-                // Ignore DataReceived read failures (e.g. during disconnect/close).
-            }
+            ProcessParsed(_parser.Feed(data, offset, count));
         }
 
         /// <summary>
@@ -543,6 +453,64 @@ namespace CSharpUbx
             return frame;
         }
 
+        private void OnDataReceived(object sender, SerialDataReceivedEventArgs e)
+        {
+            try
+            {
+                while (_serialPort.BytesToRead > 0)
+                {
+                    var readCount = _serialPort.BytesToRead;
+                    var buffer = new byte[readCount];
+                    var bytesRead = _serialPort.Read(buffer, 0, buffer.Length);
+                    if (bytesRead <= 0)
+                    {
+                        return;
+                    }
+
+                    ProcessParsed(_parser.Feed(buffer, 0, bytesRead));
+                }
+            }
+            catch
+            {
+                // Ignore DataReceived read failures (e.g. during disconnect/close).
+            }
+        }
+
+        private void ProcessParsed(IReadOnlyList<UbxMessage> parsed)
+        {
+            if (parsed == null || parsed.Count == 0)
+            {
+                return;
+            }
+
+            var toNotify = new List<UbxMessage>();
+            lock (_sync)
+            {
+                for (var i = 0; i < parsed.Count; i++)
+                {
+                    var msg = parsed[i];
+                    if (msg.MessageClass == (byte)UbxClass.Ack)
+                    {
+                        _ackNakQueue.Enqueue(msg);
+                        _ackNakSignal.Release();
+                    }
+                    else
+                    {
+                        toNotify.Add(msg);
+                    }
+                }
+            }
+
+            var handler = MessageReceived;
+            if (handler != null)
+            {
+                for (var i = 0; i < toNotify.Count; i++)
+                {
+                    handler(this, new UbxMessageReceivedEventArgs(toNotify[i]));
+                }
+            }
+        }
+
         private static bool IsAckNakFor(UbxMessage msg, UbxClass msgClass, byte msgId)
         {
             return msg.MessageClass == (byte)UbxClass.Ack &&
@@ -556,16 +524,16 @@ namespace CSharpUbx
             ack = false;
             lock (_sync)
             {
-                if (_pendingMessages.Count == 0)
+                if (_ackNakQueue.Count == 0)
                 {
                     return false;
                 }
 
                 var remaining = new Queue<UbxMessage>();
                 var found = false;
-                while (_pendingMessages.Count > 0)
+                while (_ackNakQueue.Count > 0)
                 {
-                    var msg = _pendingMessages.Dequeue();
+                    var msg = _ackNakQueue.Dequeue();
                     if (!found && IsAckNakFor(msg, msgClass, msgId))
                     {
                         ack = msg.MessageId == (byte)AckMessageId.Ack;
@@ -578,55 +546,11 @@ namespace CSharpUbx
 
                 while (remaining.Count > 0)
                 {
-                    _pendingMessages.Enqueue(remaining.Dequeue());
+                    _ackNakQueue.Enqueue(remaining.Dequeue());
                 }
 
                 return found;
             }
-        }
-
-        private IReadOnlyList<UbxMessage> EnqueueParsedMessages(IReadOnlyList<UbxMessage> parsed)
-        {
-            var notifications = new List<UbxMessage>();
-            if (parsed == null || parsed.Count == 0)
-            {
-                return notifications;
-            }
-
-            lock (_sync)
-            {
-                for (var i = 0; i < parsed.Count; i++)
-                {
-                    _pendingMessages.Enqueue(parsed[i]);
-                    notifications.Add(parsed[i]);
-                    _pendingSignal.Release();
-                }
-            }
-
-            var handler = MessageReceived;
-            if (handler != null)
-            {
-                for (var i = 0; i < notifications.Count; i++)
-                {
-                    handler(this, new UbxMessageReceivedEventArgs(notifications[i]));
-                }
-            }
-
-            return notifications;
-        }
-
-        private IReadOnlyList<UbxMessage> DrainPendingMessages()
-        {
-            var drained = new List<UbxMessage>();
-            lock (_sync)
-            {
-                while (_pendingMessages.Count > 0)
-                {
-                    drained.Add(_pendingMessages.Dequeue());
-                }
-            }
-
-            return drained;
         }
     }
 

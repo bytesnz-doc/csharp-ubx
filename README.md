@@ -40,7 +40,7 @@ client.MessageReceived += (sender, e) =>
 ## Sending arbitrary messages
 
 ```csharp
-// Send any UBX message and wait for ACK/NAK (use CancellationToken for timeout):
+// Send a configuration message and wait for ACK/NAK (use CancellationToken for timeout):
 var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
 bool acked = await client.SendConfigAsync(
     UbxClass.Cfg,

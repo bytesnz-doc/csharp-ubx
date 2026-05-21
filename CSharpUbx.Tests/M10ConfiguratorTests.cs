@@ -1,7 +1,6 @@
 using System;
-using System.IO;
+using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 using CSharpUbx;
 using Xunit;
@@ -21,111 +20,49 @@ namespace CSharpUbx.Tests
                 M10Commands.GlonassDisable,
             };
 
-            var ackData = commands
-                .SelectMany(cmd => UbxClient.BuildFrame(
-                    (byte)UbxClass.Ack,
-                    (byte)AckMessageId.Ack,
-                    new byte[] { (byte)cmd.Class, cmd.MessageId }))
+            var written = new List<byte>();
+            var clientHolder = new UbxClient[1];
+
+            clientHolder[0] = new UbxClient((buf, off, count) =>
+            {
+                for (var i = 0; i < count; i++)
+                {
+                    written.Add(buf[off + i]);
+                }
+
+                // Immediately feed back the matching ACK so SendConfigAsync can unblock.
+                var cls = buf[off + 2];
+                var id = buf[off + 3];
+                var ack = UbxClient.BuildFrame((byte)UbxClass.Ack, (byte)AckMessageId.Ack, new byte[] { cls, id });
+                clientHolder[0].FeedBytes(ack, 0, ack.Length);
+            });
+
+            await M10Configurator.ConfigureGpsOnlyAsync(clientHolder[0]);
+
+            var expectedWrites = commands
+                .SelectMany(cmd => UbxClient.BuildFrame((byte)cmd.Class, cmd.MessageId, cmd.Payload))
                 .ToArray();
 
-            using (var stream = new DuplexMemoryStream(ackData))
-            {
-                var client = new UbxClient(stream);
-
-                await M10Configurator.ConfigureGpsOnlyAsync(client);
-
-                var expectedWrites = commands
-                    .SelectMany(cmd => UbxClient.BuildFrame((byte)cmd.Class, cmd.MessageId, cmd.Payload))
-                    .ToArray();
-
-                Assert.Equal(expectedWrites, stream.Written);
-            }
+            Assert.Equal(expectedWrites, written.ToArray());
         }
 
         [Fact]
         public async Task TriggerColdStartResetAsync_ShouldSendCfgRstFrame()
         {
-            using (var stream = new DuplexMemoryStream(new byte[0]))
+            var written = new List<byte>();
+            var client = new UbxClient((buf, off, count) =>
             {
-                var client = new UbxClient(stream);
+                for (var i = 0; i < count; i++)
+                {
+                    written.Add(buf[off + i]);
+                }
+            });
 
-                await M10Configurator.TriggerColdStartResetAsync(client);
+            await M10Configurator.TriggerColdStartResetAsync(client);
 
-                var cmd = M10Commands.CfgRstColdStart;
-                var expected = UbxClient.BuildFrame((byte)cmd.Class, cmd.MessageId, cmd.Payload);
-                Assert.Equal(expected, stream.Written);
-            }
-        }
-
-        private sealed class DuplexMemoryStream : Stream
-        {
-            private readonly MemoryStream _reads;
-            private readonly MemoryStream _writes;
-
-            public DuplexMemoryStream(byte[] readData)
-            {
-                _reads = new MemoryStream(readData);
-                _writes = new MemoryStream();
-            }
-
-            public byte[] Written
-            {
-                get { return _writes.ToArray(); }
-            }
-
-            public override bool CanRead { get { return true; } }
-
-            public override bool CanWrite { get { return true; } }
-
-            public override bool CanSeek { get { return false; } }
-
-            public override long Length { get { throw new NotSupportedException(); } }
-
-            public override long Position
-            {
-                get { throw new NotSupportedException(); }
-                set { throw new NotSupportedException(); }
-            }
-
-            public override int Read(byte[] buffer, int offset, int count)
-            {
-                return _reads.Read(buffer, offset, count);
-            }
-
-            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            {
-                return _reads.ReadAsync(buffer, offset, count, cancellationToken);
-            }
-
-            public override void Write(byte[] buffer, int offset, int count)
-            {
-                _writes.Write(buffer, offset, count);
-            }
-
-            public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            {
-                return _writes.WriteAsync(buffer, offset, count, cancellationToken);
-            }
-
-            public override void Flush()
-            {
-                _writes.Flush();
-            }
-
-            public override Task FlushAsync(CancellationToken cancellationToken)
-            {
-                return Task.CompletedTask;
-            }
-
-            public override long Seek(long offset, SeekOrigin origin)
-            {
-                throw new NotSupportedException();
-            }
-
-            public override void SetLength(long value)
-            {
-                throw new NotSupportedException();
-            }
+            var cmd = M10Commands.CfgRstColdStart;
+            var expected = UbxClient.BuildFrame((byte)cmd.Class, cmd.MessageId, cmd.Payload);
+            Assert.Equal(expected, written.ToArray());
         }
     }
 }
