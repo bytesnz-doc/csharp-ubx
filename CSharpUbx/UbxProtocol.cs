@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.IO.Ports;
 using System.Threading;
 using System.Threading.Tasks;
@@ -341,7 +342,7 @@ namespace CSharpUbx
         /// </summary>
         public event EventHandler<UbxMessageReceivedEventArgs> MessageReceived;
 
-        /// <summary>Initialises a new client that communicates via <paramref name="serialPort"/>.</summary>
+        /// <summary>Initializes a new client that communicates via <paramref name="serialPort"/>.</summary>
         public UbxClient(SerialPort serialPort)
         {
             if (serialPort == null)
@@ -470,9 +471,13 @@ namespace CSharpUbx
                     ProcessParsed(_parser.Feed(buffer, 0, bytesRead));
                 }
             }
-            catch
+            catch (InvalidOperationException)
             {
-                // Ignore DataReceived read failures (e.g. during disconnect/close).
+                // Port was closed or not open; stop reading.
+            }
+            catch (IOException)
+            {
+                // I/O error during read (e.g. device disconnected).
             }
         }
 
