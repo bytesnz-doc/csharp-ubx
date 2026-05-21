@@ -205,7 +205,7 @@ namespace CSharpUbx
                 throw new ArgumentNullException(nameof(data));
             }
 
-            if (offset < 0 || count < 0 || offset + count > data.Length)
+            if (offset < 0 || count < 0 || offset > data.Length || count > data.Length - offset)
             {
                 throw new ArgumentOutOfRangeException();
             }
@@ -259,7 +259,7 @@ namespace CSharpUbx
                 throw new ArgumentNullException(nameof(data));
             }
 
-            if (offset < 0 || count < 0 || offset + count > data.Length)
+            if (offset < 0 || count < 0 || offset > data.Length || count > data.Length - offset)
             {
                 throw new ArgumentOutOfRangeException();
             }
@@ -486,11 +486,6 @@ namespace CSharpUbx
                 while (_serialPort != null && _serialPort.BytesToRead > 0)
                 {
                     var readCount = _serialPort.BytesToRead;
-                    if (readCount <= 0)
-                    {
-                        return;
-                    }
-
                     var buffer = new byte[readCount];
                     var bytesRead = _serialPort.Read(buffer, 0, buffer.Length);
                     if (bytesRead <= 0)
