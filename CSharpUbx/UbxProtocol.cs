@@ -282,13 +282,19 @@ namespace CSharpUbx
 
                 var payloadLength = (ushort)(_buffer[cursor + 4] | (_buffer[cursor + 5] << 8));
                 var frameLength = 8 + payloadLength;
+                var classIdLenPayloadLength = 4 + payloadLength;
 
-                if (_buffer.Count - cursor < frameLength)
+                if (frameLength > _buffer.Count || _buffer.Count - cursor < frameLength)
                 {
                     break;
                 }
 
-                var classIdLenPayload = _buffer.GetRange(cursor + 2, 4 + payloadLength).ToArray();
+                if (classIdLenPayloadLength > _buffer.Count - cursor - 2)
+                {
+                    break;
+                }
+
+                var classIdLenPayload = _buffer.GetRange(cursor + 2, classIdLenPayloadLength).ToArray();
                 var checksum = UbxChecksum.Compute(classIdLenPayload, 0, classIdLenPayload.Length);
                 var ckA = _buffer[cursor + 6 + payloadLength];
                 var ckB = _buffer[cursor + 7 + payloadLength];
