@@ -1,6 +1,6 @@
 # csharp-ubx
 
-Single-file C# library for sending and receiving UBX protocol frames over any UART stream.  
+Single-file C# library for sending and receiving UBX protocol frames over `SerialPort`, including event-driven message callbacks.  
 Drop `CSharpUbx/UbxProtocol.cs` into your project — no other files needed.
 
 Compatible with .NET Framework 4.7.2.
@@ -19,7 +19,7 @@ using System.Threading.Tasks;
 var serialPort = new SerialPort("COM3", 38400);
 serialPort.Open();
 
-var client = new UbxClient(serialPort.BaseStream);
+var client = new UbxClient(serialPort);
 
 // Configure GPS-only constellation (waits for ACK after each command):
 await M10Configurator.ConfigureGpsOnlyAsync(client);
@@ -27,15 +27,14 @@ await M10Configurator.ConfigureGpsOnlyAsync(client);
 // Trigger cold-start reset when needed (no ACK — device resets immediately):
 await M10Configurator.TriggerColdStartResetAsync(client);
 
-// Read one chunk and parse all valid UBX messages from it:
-var messages = await client.ReceiveMessagesAsync(1024, CancellationToken.None);
-foreach (var message in messages)
+// Receive parsed UBX messages as they arrive:
+client.MessageReceived += (sender, e) =>
 {
     Console.WriteLine("Class=0x{0:X2} Id=0x{1:X2} Payload={2} bytes",
-        message.MessageClass,
-        message.MessageId,
-        message.Payload.Length);
-}
+        e.Message.MessageClass,
+        e.Message.MessageId,
+        e.Message.Payload.Length);
+};
 ```
 
 ## Sending arbitrary messages

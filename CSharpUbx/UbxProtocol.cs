@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Ports;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -183,6 +184,17 @@ namespace CSharpUbx
         public byte[] Payload { get; private set; }
     }
 
+    /// <summary>Event data for a parsed UBX message.</summary>
+    public sealed class UbxMessageReceivedEventArgs : EventArgs
+    {
+        public UbxMessageReceivedEventArgs(UbxMessage message)
+        {
+            Message = message ?? throw new ArgumentNullException(nameof(message));
+        }
+
+        public UbxMessage Message { get; private set; }
+    }
+
     /// <summary>Computes the UBX Fletcher-8 checksum.</summary>
     public static class UbxChecksum
     {
@@ -303,15 +315,38 @@ namespace CSharpUbx
     }
 
     /// <summary>
-    /// Main entry point for UBX communication over any bidirectional Stream
-    /// (e.g. a serial port's BaseStream).
+    /// Main entry point for UBX communication over SerialPort.
     /// </summary>
-    public sealed class UbxClient
+    public sealed class UbxClient : IDisposable
     {
+        private readonly object _sync = new object();
+        private readonly SerialPort _serialPort;
         private readonly Stream _stream;
         private readonly UbxParser _parser = new UbxParser();
         private readonly Queue<UbxMessage> _pendingMessages = new Queue<UbxMessage>();
+        private readonly SemaphoreSlim _pendingSignal = new SemaphoreSlim(0);
 
+        /// <summary>
+        /// Raised for each checksum-verified UBX message received.
+        /// </summary>
+        public event EventHandler<UbxMessageReceivedEventArgs> MessageReceived;
+
+        public UbxClient(SerialPort serialPort)
+        {
+            if (serialPort == null)
+            {
+                throw new ArgumentNullException(nameof(serialPort));
+            }
+
+            _serialPort = serialPort;
+            _stream = serialPort.BaseStream;
+            _serialPort.DataReceived += OnSerialPortDataReceived;
+        }
+
+        /// <summary>
+        /// Backward-compatible stream constructor.
+        /// Prefer <see cref="UbxClient(SerialPort)"/> for event-driven serial reads.
+        /// </summary>
         public UbxClient(Stream stream)
         {
             if (stream == null)
@@ -352,7 +387,7 @@ namespace CSharpUbx
             byte[] payload = null,
             CancellationToken cancellationToken = default(CancellationToken))
         {
-            if (!_stream.CanRead)
+            if (_serialPort == null && !_stream.CanRead)
             {
                 throw new InvalidOperationException("Stream must be readable to wait for ACK/NAK.");
             }
@@ -364,34 +399,32 @@ namespace CSharpUbx
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (_pendingMessages.Count == 0)
+                bool ack;
+                if (TryDequeueAckNak(msgClass, msgId, out ack))
                 {
-                    var bytesRead = await _stream.ReadAsync(readBuffer, 0, readBuffer.Length, cancellationToken).ConfigureAwait(false);
-                    if (bytesRead == 0)
-                    {
-                        throw new EndOfStreamException("Stream ended while waiting for ACK/NAK.");
-                    }
-
-                    var parsed = _parser.Feed(readBuffer, 0, bytesRead);
-                    for (var i = 0; i < parsed.Count; i++)
-                    {
-                        _pendingMessages.Enqueue(parsed[i]);
-                    }
+                    return ack;
                 }
 
-                while (_pendingMessages.Count > 0)
+                if (_serialPort != null)
                 {
-                    var msg = _pendingMessages.Dequeue();
-                    if (IsAckNakFor(msg, msgClass, msgId))
-                    {
-                        return msg.MessageId == (byte)AckMessageId.Ack;
-                    }
+                    await _pendingSignal.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    continue;
                 }
+
+                var bytesRead = await _stream.ReadAsync(readBuffer, 0, readBuffer.Length, cancellationToken).ConfigureAwait(false);
+                if (bytesRead == 0)
+                {
+                    throw new EndOfStreamException("Stream ended while waiting for ACK/NAK.");
+                }
+
+                var parsed = _parser.Feed(readBuffer, 0, bytesRead);
+                EnqueueParsedMessages(parsed);
             }
         }
 
         /// <summary>
         /// Reads one chunk from the stream and returns all checksum-verified messages found.
+        /// In SerialPort mode this drains buffered parsed messages.
         /// </summary>
         public async Task<IReadOnlyList<UbxMessage>> ReceiveMessagesAsync(
             int bufferSize,
@@ -402,17 +435,17 @@ namespace CSharpUbx
                 throw new ArgumentOutOfRangeException(nameof(bufferSize));
             }
 
+            if (_serialPort != null)
+            {
+                return DrainPendingMessages();
+            }
+
             if (!_stream.CanRead)
             {
                 throw new InvalidOperationException("Stream must be readable.");
             }
 
-            var result = new List<UbxMessage>();
-            while (_pendingMessages.Count > 0)
-            {
-                result.Add(_pendingMessages.Dequeue());
-            }
-
+            var result = DrainPendingMessages();
             var readBuffer = new byte[bufferSize];
             var bytesRead = await _stream.ReadAsync(readBuffer, 0, readBuffer.Length, cancellationToken).ConfigureAwait(false);
             if (bytesRead == 0)
@@ -421,12 +454,57 @@ namespace CSharpUbx
             }
 
             var parsed = _parser.Feed(readBuffer, 0, bytesRead);
-            for (var i = 0; i < parsed.Count; i++)
+            var newlyParsed = EnqueueParsedMessages(parsed);
+            var merged = new List<UbxMessage>(result.Count + newlyParsed.Count);
+            for (var i = 0; i < result.Count; i++)
             {
-                result.Add(parsed[i]);
+                merged.Add(result[i]);
             }
 
-            return result;
+            for (var i = 0; i < newlyParsed.Count; i++)
+            {
+                merged.Add(newlyParsed[i]);
+            }
+
+            return merged;
+        }
+
+        public void Dispose()
+        {
+            if (_serialPort != null)
+            {
+                _serialPort.DataReceived -= OnSerialPortDataReceived;
+            }
+
+            _pendingSignal.Dispose();
+        }
+
+        private void OnSerialPortDataReceived(object sender, SerialDataReceivedEventArgs e)
+        {
+            try
+            {
+                while (_serialPort != null && _serialPort.BytesToRead > 0)
+                {
+                    var readCount = _serialPort.BytesToRead;
+                    if (readCount <= 0)
+                    {
+                        return;
+                    }
+
+                    var buffer = new byte[readCount];
+                    var bytesRead = _serialPort.Read(buffer, 0, buffer.Length);
+                    if (bytesRead <= 0)
+                    {
+                        return;
+                    }
+                    var parsed = _parser.Feed(buffer, 0, bytesRead);
+                    EnqueueParsedMessages(parsed);
+                }
+            }
+            catch
+            {
+                // Ignore DataReceived read failures (e.g. during disconnect/close).
+            }
         }
 
         /// <summary>
@@ -470,6 +548,84 @@ namespace CSharpUbx
                    msg.Payload.Length == 2 &&
                    msg.Payload[0] == (byte)msgClass &&
                    msg.Payload[1] == msgId;
+        }
+
+        private bool TryDequeueAckNak(UbxClass msgClass, byte msgId, out bool ack)
+        {
+            ack = false;
+            lock (_sync)
+            {
+                if (_pendingMessages.Count == 0)
+                {
+                    return false;
+                }
+
+                var remaining = new Queue<UbxMessage>();
+                var found = false;
+                while (_pendingMessages.Count > 0)
+                {
+                    var msg = _pendingMessages.Dequeue();
+                    if (!found && IsAckNakFor(msg, msgClass, msgId))
+                    {
+                        ack = msg.MessageId == (byte)AckMessageId.Ack;
+                        found = true;
+                        continue;
+                    }
+
+                    remaining.Enqueue(msg);
+                }
+
+                while (remaining.Count > 0)
+                {
+                    _pendingMessages.Enqueue(remaining.Dequeue());
+                }
+
+                return found;
+            }
+        }
+
+        private IReadOnlyList<UbxMessage> EnqueueParsedMessages(IReadOnlyList<UbxMessage> parsed)
+        {
+            var notifications = new List<UbxMessage>();
+            if (parsed == null || parsed.Count == 0)
+            {
+                return notifications;
+            }
+
+            lock (_sync)
+            {
+                for (var i = 0; i < parsed.Count; i++)
+                {
+                    _pendingMessages.Enqueue(parsed[i]);
+                    notifications.Add(parsed[i]);
+                    _pendingSignal.Release();
+                }
+            }
+
+            var handler = MessageReceived;
+            if (handler != null)
+            {
+                for (var i = 0; i < notifications.Count; i++)
+                {
+                    handler(this, new UbxMessageReceivedEventArgs(notifications[i]));
+                }
+            }
+
+            return notifications;
+        }
+
+        private IReadOnlyList<UbxMessage> DrainPendingMessages()
+        {
+            var drained = new List<UbxMessage>();
+            lock (_sync)
+            {
+                while (_pendingMessages.Count > 0)
+                {
+                    drained.Add(_pendingMessages.Dequeue());
+                }
+            }
+
+            return drained;
         }
     }
 
