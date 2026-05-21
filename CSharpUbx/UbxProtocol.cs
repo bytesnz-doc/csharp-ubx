@@ -283,7 +283,7 @@ namespace CSharpUbx
                 var payloadLength = (ushort)(_buffer[cursor + 4] | (_buffer[cursor + 5] << 8));
                 var frameLength = 8 + payloadLength;
 
-                if (cursor + frameLength > _buffer.Count)
+                if (_buffer.Count - cursor < frameLength)
                 {
                     break;
                 }
@@ -483,7 +483,7 @@ namespace CSharpUbx
         {
             try
             {
-                while (_serialPort != null && _serialPort.BytesToRead > 0)
+                while (_serialPort.BytesToRead > 0)
                 {
                     var readCount = _serialPort.BytesToRead;
                     var buffer = new byte[readCount];

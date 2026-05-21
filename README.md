@@ -3,7 +3,7 @@
 Single-file C# library for sending and receiving UBX protocol frames over `SerialPort`, including event-driven message callbacks.  
 Drop `CSharpUbx/UbxProtocol.cs` into your project — no other files needed.
 
-Compatible with .NET Framework 4.7.2.
+Compatible with .NET Framework 4.7.2 and .NET 8.0.
 
 Protocol reference: https://content.u-blox.com/sites/default/files/documents/u-blox-M10-SPG-5.30_InterfaceDescription_UBXDOC-304424225-20395.pdf
 
